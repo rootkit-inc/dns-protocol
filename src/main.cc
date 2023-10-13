@@ -6,6 +6,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <assert.h>
+#include <errno.h>
 
 #include "../includes/includes.h"
 #ifndef _SERVER_CONF_H
@@ -23,7 +24,7 @@ int main(int argc, char *argv[]) {
 
   DNS_Msg man;
   dns_message_t *msg = (dns_message_t*)man.CreateHeader(0xdede,0x0100,1,3,1,1);
-  man.Qsec_push(msg, (char*)"test.com", 1, 1, 1);
+  man.Qsec_push(msg, (char*)"beer.com", 1, 1, 1);
   rdata_t rr = (rdata_t)man.new_rdata("2a00:1450:4014:80e::200e", AF_INET6);
   rdata_t rr1 = (rdata_t)man.new_rdata("1.2.9.255", AF_INET);
   man.push_RR(msg, 0xc00c, RR_TYPE_AAAA, 0x1, 0xff, rr.size, rr);
@@ -56,16 +57,50 @@ int main(int argc, char *argv[]) {
   addr.sin_port = htons(53);
   addr.sin_addr.s_addr = inet_addr(ip);
  
-  sendto(sockfd, sendit->addr, sendit->size, 0, (struct sockaddr*)&addr, sizeof(addr));
-  // recvfrom(sockfd, buffer, 512, 0, (struct sockaddr*)&addr, sizeof(addr));
+  socklen_t len;
 
-  // dns_err_tuple_t readit = man.unpack_msg((char*)buffer, 512);
-  // if(readit.errnum != ALL_GOOD) {
-  //   printf("ERROR %x\n\n", readit.errnum);
-  //   exit(0);
-  // }
+  sendto(sockfd, sendit->addr, sendit->size, 0, (struct sockaddr*)&addr, sizeof(addr));
+  size_t rcved = recvfrom(sockfd, buffer, 512, 0, (struct sockaddr*)&addr, &len);
+  if (rcved == -1)
+    perror("errno -");
+  printf("+++RECEIVED %i\n", len);
+  hexdump(buffer, rcved);
+
+
+  // Unpack the received buffer into a dns_err_tuple_t
+  // which contains only error number (If any) and 'dns_message_t *'
+  dns_err_tuple_t readit = man.unpack_msg((char*)buffer, rcved);
+  if(readit.errnum != ALL_GOOD) {
+    printf("ERROR %x\n\n", readit.errnum);
+    exit(0);
+  }
+
+  dns_message_t *rmsg = readit.dns_msg;
+
+  printf("Question count: %i\n", rmsg->meta.Qnum);
   
-  // packed_dns_msg_t *sendit = man.pack_msg(msg23);
+  for (int i = 0; i < rmsg->meta.Qnum; i++) {
+    printf("\tQuestion name- %s - QClass - %i, QType - %i\n",
+      rmsg->Q[i].QName, ntohs(rmsg->Q[i].QClass), ntohs(rmsg->Q[i].QType));
+  }
+
+  char ipv4_addr[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+
+  printf("Resource Record answer count - %i\n", rmsg->meta.RRnum);
+  for (int i = 0; i < rmsg->meta.RRnum; i++) {
+    if ((uint8_t)(ntohs(rmsg->RRsec[i].Name) >> 8) == 0xc0    // 0xc0 means its a pointer
+      && (uint8_t)ntohs(rmsg->RRsec[i].Name) <= rcved) {      // usually 0c (12b) from the beginning (buffer)
+      printf("\tRR: -> %s, ",
+        buffer+(uint8_t)ntohs(rmsg->RRsec[i].Name));
+      if (rmsg->RRsec[i].RData.size == 4) {
+        printf("Addr %s\n", inet_ntop(AF_INET, (void *)rmsg->RRsec[i].RData.addr,ipv4_addr,16));
+      }
+    }
+  }
+  man.Free(rmsg);
+  
+  // packed_dns_msg_t *llllll = man.pack_msg(readit.dns_msg);
+  // hexdump(llllll->addr, llllll->size);
 
  free(ip);
  close(sockfd);
